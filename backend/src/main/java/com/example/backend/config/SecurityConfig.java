@@ -51,7 +51,6 @@ public class SecurityConfig {
                                 .requestMatchers("/", "/index.html", "/sw.js", "/push-notifications.js").permitAll()
                                 .requestMatchers("/*.png", "/*.ico", "/*.css", "/*.js").permitAll()
                                 .requestMatchers(HttpMethod.GET, "/event", "/event/search/**", "/event/*").permitAll()
-                                .requestMatchers(HttpMethod.GET, "/post/news-feed").permitAll()
                                         .anyRequest()
                                         .authenticated())
                 .authenticationProvider(authenticationProvider())
@@ -81,7 +80,12 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOrigins(Arrays.asList("http://localhost:5173", "http://localhost:3000"));
+        configuration.setAllowedOrigins(Arrays.asList(
+                "http://localhost:5173", 
+                "http://localhost:3000",
+                "https://volunteer-hub-two.vercel.app",
+                "https://*.vercel.app"
+        ));
         configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"));
         configuration.setAllowedHeaders(Arrays.asList("*"));
         configuration.setAllowCredentials(true);
