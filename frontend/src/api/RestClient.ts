@@ -25,6 +25,35 @@ export class RestClient {
 		return headers;
 	}
 
+	// Cache for events
+	private static eventCache: { data: any, timestamp: number } | null = null;
+	private static CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+
+	private static clearEventCache() {
+		this.eventCache = null;
+		console.log("Event cache cleared");
+	}
+
+	// Handler for locked account - set by AuthContext
+	static onLockedAccount: (() => void) | null = null;
+
+	// Check if response indicates a locked account
+	static isLockedResponse(response: any): boolean {
+		return response?.message === "ACCOUNT_LOCKED";
+	}
+
+	// Process response and handle locked account
+	private static async processResponse(result: Response): Promise<any> {
+		const json = await result.json();
+		
+		// Check if account is locked and handler is set
+		if (this.isLockedResponse(json) && this.onLockedAccount) {
+			this.onLockedAccount();
+		}
+		
+		return json;
+	}
+
 	// ========== AUTH APIs ==========
 	
 	static async handleLogin(username: string, password: string): Promise<any> {
@@ -71,6 +100,13 @@ export class RestClient {
 	// ========== EVENT APIs ==========
 
 	static async getEvents(): Promise<any> {
+		// Check cache
+		const now = Date.now();
+		if (this.eventCache && (now - this.eventCache.timestamp < this.CACHE_DURATION)) {
+			console.log("Serving events from cache");
+			return this.eventCache.data;
+		}
+
 		const url = `${RestClient.baseUrl}/event`;
 
 		const result = await fetch(url, {
@@ -78,7 +114,14 @@ export class RestClient {
 			headers: this.getHeaders(),
 		});
 
-		return await result.json();
+		const data = await result.json();
+		
+		// Update cache
+		if (result.ok) {
+			this.eventCache = { data, timestamp: now };
+		}
+
+		return data;
 	}
 
 	static async getAllEventsForAdmin(): Promise<any> {
@@ -125,6 +168,7 @@ export class RestClient {
 			body: JSON.stringify(eventData),
 		});
 
+		this.clearEventCache();
 		return await result.json();
 	}
 
@@ -145,6 +189,7 @@ export class RestClient {
 			body: JSON.stringify(eventData),
 		});
 
+		this.clearEventCache();
 		return await result.json();
 	}
 
@@ -156,6 +201,7 @@ export class RestClient {
 			headers: this.getHeaders(true),
 		});
 
+		this.clearEventCache();
 		return await result.json();
 	}
 
@@ -167,6 +213,7 @@ export class RestClient {
 			headers: this.getHeaders(true),
 		});
 
+		this.clearEventCache();
 		return await result.json();
 	}
 
@@ -237,6 +284,7 @@ export class RestClient {
 			headers: this.getHeaders(true),
 		});
 
+		this.clearEventCache();
 		return await result.json();
 	}
 
@@ -248,6 +296,7 @@ export class RestClient {
 			headers: this.getHeaders(true),
 		});
 
+		this.clearEventCache();
 		return await result.json();
 	}
 
@@ -259,6 +308,7 @@ export class RestClient {
 			headers: this.getHeaders(true),
 		});
 
+		this.clearEventCache();
 		return await result.json();
 	}
 
@@ -270,6 +320,7 @@ export class RestClient {
 			headers: this.getHeaders(true),
 		});
 
+		this.clearEventCache();
 		return await result.json();
 	}
 
@@ -314,6 +365,29 @@ export class RestClient {
 		}
 
 		return await result.json();
+	}
+
+	static async markAllNotificationsAsRead(userId: number): Promise<any> {
+		// First get all notifications, then mark unread ones as read
+		const notifications = await this.getUserNotifications(userId);
+		
+		if (!notifications.data) {
+			return { success: false, message: "Failed to get notifications" };
+		}
+		
+		const unreadNotifications = notifications.data.filter((n: any) => !n.read);
+		
+		// Mark each unread notification as read
+		const promises = unreadNotifications.map((notif: any) => 
+			this.markNotificationAsRead(notif.id).catch(err => {
+				console.error(`Failed to mark notification ${notif.id} as read:`, err);
+				return null;
+			})
+		);
+		
+		await Promise.all(promises);
+		
+		return { success: true, markedCount: unreadNotifications.length };
 	}
 
 	static async subscribeToPushNotifications(userId: number, subscription: any): Promise<any> {
@@ -365,6 +439,28 @@ export class RestClient {
 		const result = await fetch(url, {
 			method: "GET",
 			headers: this.getHeaders(true),
+		});
+
+		return await result.json();
+	}
+
+	static async getTopEvents(limit: number = 5): Promise<any> {
+		const url = `${RestClient.baseUrl}/event/top?limit=${limit}`;
+
+		const result = await fetch(url, {
+			method: "GET",
+			headers: this.getHeaders(),
+		});
+
+		return await result.json();
+	}
+
+	static async getHottestEvents(limit: number = 5): Promise<any> {
+		const url = `${RestClient.baseUrl}/event/hottest?limit=${limit}`;
+
+		const result = await fetch(url, {
+			method: "GET",
+			headers: this.getHeaders(),
 		});
 
 		return await result.json();
@@ -442,8 +538,8 @@ export class RestClient {
 
 	// ========== POST APIs ==========
 
-	static async getPostsByEventId(eventId: number): Promise<any> {
-		const url = `${RestClient.baseUrl}/post/by-event?event_id=${eventId}`;
+	static async getPostsByEventId(eventId: number, page: number = 0, limit: number = 10): Promise<any> {
+		const url = `${RestClient.baseUrl}/post/by-event?event_id=${eventId}&page=${page}&limit=${limit}`;
 
 		const result = await fetch(url, {
 			method: "GET",
@@ -453,10 +549,13 @@ export class RestClient {
 		return await result.json();
 	}
 
-	static async getNewsFeedPosts(userId?: number): Promise<any> {
-		const url = userId 
-			? `${RestClient.baseUrl}/post/news-feed?user_id=${userId}`
-			: `${RestClient.baseUrl}/post/news-feed`;
+	static async getNewsFeedPosts(userId?: number, page: number = 0, limit: number = 5): Promise<any> {
+		const queryParams = new URLSearchParams();
+		if (userId) queryParams.append("user_id", userId.toString());
+		queryParams.append("page", page.toString());
+		queryParams.append("size", limit.toString());
+
+		const url = `${RestClient.baseUrl}/post/news-feed?${queryParams.toString()}`;
 
 		// Always try to include auth headers if available (for personalized feed)
 		const result = await fetch(url, {
@@ -613,6 +712,30 @@ export class RestClient {
 			method: "GET",
 			headers: this.getHeaders(true),
 		});
+
+		return await result.json();
+	}
+
+	// ========== ATTENDANCE APIs ==========
+
+	static async markParticipantAttendance(eventUserId: number, completed: boolean): Promise<any> {
+		const url = `${RestClient.baseUrl}/event-user/complete/?eventUserId=${eventUserId}&completed=${completed}`;
+
+		const headers = this.getHeaders(true);
+		console.log("Calling markParticipantAttendance with headers:", headers);
+
+		const result = await fetch(url, {
+			method: "PATCH",
+			headers: headers,
+		});
+
+		console.log("markParticipantAttendance response status:", result.status);
+
+		if (!result.ok) {
+			const errorText = await result.text();
+			console.error("markParticipantAttendance error:", result.status, errorText);
+			throw new Error(`Failed to update attendance: ${result.status} ${result.statusText}`);
+		}
 
 		return await result.json();
 	}

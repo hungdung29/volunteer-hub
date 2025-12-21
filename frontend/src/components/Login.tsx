@@ -20,10 +20,20 @@ export default function Login({ setLoginOpen }: Props) {
 		e?.preventDefault();
 		RestClient.handleLogin(username, password)
 			.then((result) => {
+				// Check if account is locked
+				if (result.message === "ACCOUNT_LOCKED") {
+					auth.setShowLockedModal(true);
+					setLoginOpen(false);
+					return;
+				}
+
 				if (result.data && result.data.user) {
 					const userData = result.data.user;
 					auth.login(username, result.data.token, userData);
 					setLoginOpen(false);
+					
+					// Show success toast
+					showToast(`Welcome back, ${userData.username}!`, "success");
 					
 					// Check if admin and redirect to dashboard
 					const rawRole = userData.role;
@@ -32,7 +42,7 @@ export default function Login({ setLoginOpen }: Props) {
 						: (rawRole as { name?: string } | undefined)?.name ?? "";
 					
 					if (roleName.toUpperCase() === "ADMIN") {
-						navigate("/admin");
+						navigate("/admin/events");
 					}
 				} else {
 					showToast("Login failed: " + (result.message || "Unknown error"), "error");
@@ -48,7 +58,7 @@ export default function Login({ setLoginOpen }: Props) {
 		<>
 			{/* Dark overlay */}
 			<div
-				className="fixed w-full h-full bg-[rgba(0,0,0,0.5)] z-[999] left-0 top-0"
+				className="fixed w-full h-full bg-[rgba(0,0,0,0.5)] z-[999] left-0 top-0 cursor-pointer"
 				onClick={() => setLoginOpen(false)}
 			></div>
 

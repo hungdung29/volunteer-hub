@@ -1,19 +1,76 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { IconX, IconUpload, IconCalendar, IconMapPin, IconPhoto } from "@tabler/icons-react";
 import { createClient } from "@supabase/supabase-js";
 import { RestClient } from "@/api/RestClient";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/components/ui/Toast";
+import * as yup from "yup";
+
+// Yup validation schema factory
+const createEventValidationSchema = (editMode: boolean = false) => yup.object().shape({
+	title: yup
+		.string()
+		.required("Event title is required")
+		.min(5, "Title must be at least 5 characters")
+		.max(100, "Title must not exceed 100 characters"),
+	type: yup
+		.string()
+		.required("Event type is required")
+		.oneOf(["HELPING", "PLANTING", "MEDICAL", "FUNDRAISER", "FOOD"], "Invalid event type"),
+	startTime: yup
+		.string()
+		.required("Start date and time is required")
+		.test("is-future", "Start time must be in the future", function(value) {
+			// Skip future check in edit mode
+			if (editMode) return true;
+			if (!value) return false;
+			return new Date(value) > new Date();
+		}),
+	endTime: yup
+		.string()
+		.required("End date and time is required")
+		.test("after-start", "End time must be after start time", function(value) {
+			const { startTime } = this.parent;
+			if (!value || !startTime) return false;
+			return new Date(value) > new Date(startTime);
+		}),
+	location: yup
+		.string()
+		.required("Location is required")
+		.min(3, "Location must be at least 3 characters"),
+	description: yup
+		.string()
+		.required("Description is required")
+		.min(20, "Description must be at least 20 characters")
+		.max(2000, "Description must not exceed 2000 characters"),
+});
 
 const supabase = createClient(
 	import.meta.env.VITE_SUPABASE_URL,
 	import.meta.env.VITE_SUPABASE_ANON_KEY
 );
 
+const getSupabaseImageUrl = (imagePath: string): string => {
+	if (!imagePath) return "";
+	const { data } = supabase.storage.from("volunteer").getPublicUrl(imagePath);
+	return data.publicUrl;
+};
+
 interface CreateEventModalProps {
 	isOpen: boolean;
 	onClose: () => void;
 	onEventCreated: () => void;
+	editMode?: boolean;
+	initialEventData?: {
+		id: number;
+		type: string;
+		title: string;
+		startTime: string;
+		endTime: string;
+		location: string;
+		description: string;
+		imageUrl: string;
+	};
 }
 
 const EVENT_TYPES = [
@@ -24,21 +81,84 @@ const EVENT_TYPES = [
 	{ value: "FOOD", label: "Food" },
 ];
 
-export default function CreateEventModal({ isOpen, onClose, onEventCreated }: CreateEventModalProps) {
+export default function CreateEventModal({ isOpen, onClose, onEventCreated, editMode = false, initialEventData }: CreateEventModalProps) {
 	const { user } = useAuth();
 	const { showToast } = useToast();
 	const [isSubmitting, setIsSubmitting] = useState(false);
 	const [imageFile, setImageFile] = useState<File | null>(null);
 	const [imagePreview, setImagePreview] = useState<string>("");
 	
-	const [formData, setFormData] = useState({
-		type: "HELPING",
-		title: "",
-		startTime: "",
-		endTime: "",
-		location: "",
-		description: "",
-	});
+	// Initialize form data from initial event data if in edit mode
+	const getInitialFormData = () => {
+		if (editMode && initialEventData) {
+			// Convert ISO to datetime-local format
+			const formatForInput = (isoString: string) => {
+				const date = new Date(isoString);
+				const year = date.getFullYear();
+				const month = String(date.getMonth() + 1).padStart(2, '0');
+				const day = String(date.getDate()).padStart(2, '0');
+				const hours = String(date.getHours()).padStart(2, '0');
+				const minutes = String(date.getMinutes()).padStart(2, '0');
+				return `${year}-${month}-${day}T${hours}:${minutes}`;
+			};
+
+			return {
+				type: initialEventData.type,
+				title: initialEventData.title,
+				startTime: formatForInput(initialEventData.startTime),
+				endTime: formatForInput(initialEventData.endTime),
+				location: initialEventData.location,
+				description: initialEventData.description,
+			};
+		}
+		return {
+			type: "HELPING",
+			title: "",
+			startTime: "",
+			endTime: "",
+			location: "",
+			description: "",
+		};
+	};
+
+	const [formData, setFormData] = useState(getInitialFormData());
+	const [initialForm, setInitialForm] = useState(getInitialFormData()); // Store initial state for comparison
+	const [errors, setErrors] = useState<Record<string, string>>({});
+	// Track if modal was previously open
+	const wasOpenRef = useRef(false);
+
+	// Re-initialize form data only when modal opens (not on every render)
+	useEffect(() => {
+		if (isOpen && !wasOpenRef.current) {
+			// Modal just opened - initialize form
+			const initialData = getInitialFormData();
+			setFormData(initialData);
+			setInitialForm(initialData);
+			setErrors({});
+			setImageFile(null);
+			
+			// Load existing image preview in edit mode
+			if (editMode && initialEventData?.imageUrl) {
+				const imageUrl = getSupabaseImageUrl(initialEventData.imageUrl);
+				setImagePreview(imageUrl);
+			} else {
+				setImagePreview("");
+			}
+		}
+		wasOpenRef.current = isOpen;
+	}, [isOpen]);
+
+	// Check if form has changes
+	const hasChanges = () => {
+		if (!editMode) return true; // Always allow submit in create mode
+		
+		const formChanged = Object.keys(formData).some(
+			key => formData[key as keyof typeof formData] !== initialForm[key as keyof typeof initialForm]
+		);
+		const imageChanged = imageFile !== null;
+		
+		return formChanged || imageChanged;
+	};
 
 	const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
 		const { name, value } = e.target;
@@ -97,12 +217,34 @@ export default function CreateEventModal({ isOpen, onClose, onEventCreated }: Cr
 			return;
 		}
 
-		if (!formData.title || !formData.startTime || !formData.endTime || !formData.location || !formData.description) {
-			showToast("Please fill in all required fields", "warning");
-			return;
+		// Validate form with Yup
+		try {
+			const validationSchema = createEventValidationSchema(editMode);
+			await validationSchema.validate(formData, { abortEarly: false });
+			setErrors({});
+		} catch (err) {
+			if (err instanceof yup.ValidationError) {
+				const validationErrors: Record<string, string> = {};
+				err.inner.forEach((error) => {
+					if (error.path) {
+						validationErrors[error.path] = error.message;
+					}
+				});
+				setErrors(validationErrors);
+				
+				// Show specific error message(s) in toast
+				const errorCount = err.inner.length;
+				const firstError = err.inner[0]?.message || "Please fix validation errors";
+				const toastMessage = errorCount > 1 
+					? `${firstError} (+${errorCount - 1} more error${errorCount - 1 > 1 ? 's' : ''})`
+					: firstError;
+				showToast(toastMessage, "warning");
+				return;
+			}
 		}
 
-		if (!imageFile) {
+		// In create mode, image is required. In edit mode, it's optional
+		if (!editMode && !imageFile) {
 			showToast("Please upload an event image", "warning");
 			return;
 		}
@@ -110,16 +252,19 @@ export default function CreateEventModal({ isOpen, onClose, onEventCreated }: Cr
 		setIsSubmitting(true);
 
 		try {
-			// Upload image first
-			const imagePath = await uploadImage();
-			if (!imagePath) {
-				setIsSubmitting(false);
-				return;
+			// Upload new image if one was selected
+			let imagePath = editMode && initialEventData ? initialEventData.imageUrl : "";
+			if (imageFile) {
+				const uploadedPath = await uploadImage();
+				if (!uploadedPath) {
+					setIsSubmitting(false);
+					return;
+				}
+				imagePath = uploadedPath;
 			}
 
-			// Create event
+			// Prepare event data
 			const eventData = {
-				managerId: user.id,
 				type: formData.type,
 				title: formData.title,
 				startTime: formData.startTime,
@@ -129,34 +274,42 @@ export default function CreateEventModal({ isOpen, onClose, onEventCreated }: Cr
 				imageUrl: imagePath,
 			};
 
-			const result = await RestClient.createEvent(eventData);
-
-			if (result.data) {
-				showToast("Event created successfully! Waiting for admin approval.", "success");
-				onEventCreated();
-				handleClose();
+			if (editMode && initialEventData) {
+				// Update existing event
+				const result = await RestClient.updateEvent(initialEventData.id, eventData);
+				if (result.data || result.success !== false) {
+					showToast("Event updated successfully!", "success");
+					onEventCreated(); // Refresh parent
+					handleClose();
+				} else {
+					showToast(result.message || "Failed to update event", "error");
+				}
 			} else {
-				showToast(result.message || "Failed to create event", "error");
+				// Create new event
+				const result = await RestClient.createEvent({
+					...eventData,
+					managerId: user.id,
+				});
+
+				if (result.data) {
+					showToast("Event created successfully! Waiting for admin approval.", "success");
+					onEventCreated();
+					handleClose();
+				} else {
+					showToast(result.message || "Failed to create event", "error");
+				}
 			}
 		} catch (err) {
-			console.error("Failed to create event:", err);
-			showToast("Failed to create event", "error");
+			console.error(`Failed to ${editMode ? 'update' : 'create'} event:`, err);
+			showToast(`Failed to ${editMode ? 'update' : 'create'} event`, "error");
 		} finally {
 			setIsSubmitting(false);
 		}
 	};
 
 	const handleClose = () => {
-		setFormData({
-			type: "HELPING",
-			title: "",
-			startTime: "",
-			endTime: "",
-			location: "",
-			description: "",
-		});
-		setImageFile(null);
-		setImagePreview("");
+		// Form data will be reset by useEffect when modal reopens
+		setErrors({});
 		onClose();
 	};
 
@@ -164,12 +317,12 @@ export default function CreateEventModal({ isOpen, onClose, onEventCreated }: Cr
 
 	return (
 		<div className="fixed inset-0 z-[1000] flex items-center justify-center">
-			<div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={handleClose} />
+			<div className="absolute inset-0 bg-black/50 backdrop-blur-sm cursor-pointer" onClick={handleClose} />
 			<div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden">
 				{/* Header */}
 				<div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between bg-gradient-to-r from-[#556b2f] to-[#6d8c3a]">
 					<h2 className="text-xl font-bold text-white font-(family-name:--font-crimson)">
-						Create New Event
+						{editMode ? "Edit Event" : "Create New Event"}
 					</h2>
 					<button
 						onClick={handleClose}
@@ -193,9 +346,9 @@ export default function CreateEventModal({ isOpen, onClose, onEventCreated }: Cr
 								value={formData.title}
 								onChange={handleInputChange}
 								placeholder="Enter event title"
-								className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#556b2f] focus:border-transparent transition-all"
-								required
+								className={`w-full px-4 py-3 border rounded-xl focus:outline-none focus:ring-2 focus:ring-[#556b2f] focus:border-transparent transition-all ${errors.title ? 'border-red-500' : 'border-gray-300'}`}
 							/>
+							{errors.title && <p className="mt-1 text-sm text-red-500">{errors.title}</p>}
 						</div>
 
 						{/* Event Type */}
@@ -335,16 +488,16 @@ export default function CreateEventModal({ isOpen, onClose, onEventCreated }: Cr
 						</button>
 						<button
 							type="submit"
-							disabled={isSubmitting}
+							disabled={isSubmitting || (editMode && !hasChanges())}
 							className="flex-1 px-6 py-3 bg-[#556b2f] text-white rounded-xl font-semibold hover:bg-[#6d8c3a] transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
 						>
 							{isSubmitting ? (
 								<>
 									<div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-									Creating...
+									{editMode ? "Updating..." : "Creating..."}
 								</>
 							) : (
-								"Create Event"
+								<>{editMode ? "Update Event" : "Create Event"}</>
 							)}
 						</button>
 					</div>

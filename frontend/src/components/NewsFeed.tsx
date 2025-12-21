@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Link } from "react-router-dom";
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -13,7 +13,6 @@ import {
 	IconChevronUp,
 	IconTrash,
 	IconCalendarEvent,
-	IconSparkles,
 } from "@tabler/icons-react";
 
 import {
@@ -25,6 +24,7 @@ import {
 import { RestClient } from "@/api/RestClient";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "./ui/Toast";
+import { useConfirmDialog } from "./ui/ConfirmDialog";
 
 const supabase = createClient(
 	import.meta.env.VITE_SUPABASE_URL,
@@ -63,9 +63,28 @@ interface Post {
 	event?: Event | null;
 }
 
-export default function NewsFeed() {
+interface NewsFeedProps {
+	isEmbedded?: boolean;
+}
+
+export default function NewsFeed({ isEmbedded = false }: NewsFeedProps) {
 	const [posts, setPosts] = useState<Post[]>([]);
 	const [loading, setLoading] = useState(true);
+	const [page, setPage] = useState(0);
+	const [hasMore, setHasMore] = useState(true);
+	const observer = useRef<IntersectionObserver | null>(null);
+
+	const lastPostElementRef = useCallback((node: HTMLDivElement) => {
+		if (loading) return;
+		if (observer.current) observer.current.disconnect();
+		observer.current = new IntersectionObserver(entries => {
+			if (entries[0].isIntersecting && hasMore) {
+				setPage(prevPage => prevPage + 1);
+			}
+		});
+		if (node) observer.current.observe(node);
+	}, [loading, hasMore]);
+
 	const [newPostContent, setNewPostContent] = useState("");
 	const [imageFile, setImageFile] = useState<File | null>(null);
 	const [imagePreview, setImagePreview] = useState<string>("");
@@ -76,12 +95,14 @@ export default function NewsFeed() {
 	const [postComments, setPostComments] = useState<Record<number, Comment[]>>({});
 	const [replyingTo, setReplyingTo] = useState<{ postId: number; commentId?: number; rootCommentId?: number } | null>(null);
 	const [replyContent, setReplyContent] = useState("");
+	const [mainCommentContent, setMainCommentContent] = useState<Record<number, string>>({});
 	const [expandedReplies, setExpandedReplies] = useState<Set<number>>(new Set());
 	const [commentReplies, setCommentReplies] = useState<Record<number, Comment[]>>({});
 	const [animatingLike, setAnimatingLike] = useState<number | null>(null);
 	
 	const { showToast } = useToast();
 	const { user, isAuthenticated } = useAuth();
+	const { confirm, ConfirmDialogComponent } = useConfirmDialog();
 
 	const getSupabaseImageUrl = (imageUrl: string): string => {
 		if (!imageUrl) return "";
@@ -90,32 +111,54 @@ export default function NewsFeed() {
 		return data?.publicUrl || "";
 	};
 
-	const fetchPosts = useCallback(async () => {
+	const fetchPosts = useCallback(async (pageNum: number) => {
 		try {
 			setLoading(true);
-			console.log("Fetching news feed for user:", user?.id);
-			const result = await RestClient.getNewsFeedPosts(user?.id);
-			console.log("News feed API response:", result);
+			
+			console.log(`Fetching news feed page ${pageNum} for user:`, user?.id);
+			const limit = 5;
+			const result = await RestClient.getNewsFeedPosts(user?.id, pageNum, limit);
+			
 			if (result.data) {
-				console.log("Posts received:", result.data.length, result.data);
-				setPosts(result.data);
+				const newPosts = result.data;
+				console.log(`Page ${pageNum} received ${newPosts.length} posts`);
+				
+				setPosts(prev => {
+					// If it's page 0, replace. Else append unique posts (filter out duplicates just in case)
+					if (pageNum === 0) return newPosts;
+					
+					const existingIds = new Set(prev.map(p => p.id));
+					const uniqueNewPosts = newPosts.filter((p: Post) => !existingIds.has(p.id));
+					return [...prev, ...uniqueNewPosts];
+				});
+				
+				// Identify if we have more posts to load
+				setHasMore(newPosts.length === limit);
+				
 				// Check which posts the user has liked
-				if (user?.id) {
-					const likedSet = new Set<number>();
-					for (const post of result.data) {
+				if (user?.id && newPosts.length > 0) {
+					const newLikedSet = new Set<number>();
+					// Combine check requests in future optimization, for now loop is acceptable for 5 items
+					for (const post of newPosts) {
 						try {
 							const likeResult = await RestClient.checkLikePost(user.id, post.id);
 							if (likeResult.data === true) {
-								likedSet.add(post.id);
+								newLikedSet.add(post.id);
 							}
 						} catch {
 							// Ignore individual like check errors
 						}
 					}
-					setLikedPosts(likedSet);
+					setLikedPosts(prev => {
+						const next = new Set(prev);
+						newLikedSet.forEach(id => next.add(id));
+						return next;
+					});
 				}
 			} else {
 				console.log("No data in response or data is null");
+				if (pageNum === 0) setPosts([]);
+				setHasMore(false);
 			}
 		} catch (error) {
 			console.error("Failed to fetch news feed:", error);
@@ -126,8 +169,9 @@ export default function NewsFeed() {
 	}, [user?.id]);
 
 	useEffect(() => {
-		fetchPosts();
-	}, [fetchPosts]);
+		fetchPosts(page);
+	}, [fetchPosts, page]);
+
 
 	const formatTimeAgo = (dateString: string) => {
 		const date = new Date(dateString);
@@ -277,9 +321,15 @@ export default function NewsFeed() {
 			return;
 		}
 
-		if (!confirm("Are you sure you want to delete this post?")) {
-			return;
-		}
+		const confirmed = await confirm({
+			title: "Delete Post",
+			message: "Are you sure you want to delete this post? This action cannot be undone.",
+			confirmText: "Delete",
+			cancelText: "Cancel",
+			variant: "danger",
+		});
+
+		if (!confirmed) return;
 
 		try {
 			const result = await RestClient.deletePost(postId);
@@ -388,9 +438,15 @@ export default function NewsFeed() {
 			return;
 		}
 
-		if (!confirm("Are you sure you want to delete this comment?")) {
-			return;
-		}
+		const confirmed = await confirm({
+			title: "Delete Comment",
+			message: "Are you sure you want to delete this comment?",
+			confirmText: "Delete",
+			cancelText: "Cancel",
+			variant: "danger",
+		});
+
+		if (!confirmed) return;
 
 		try {
 			const result = await RestClient.deleteComment(commentId);
@@ -476,8 +532,49 @@ export default function NewsFeed() {
 		}
 	};
 
+	const handleSubmitMainComment = async (postId: number) => {
+		const content = mainCommentContent[postId]?.trim();
+		if (!content) {
+			showToast("Comment cannot be empty!", "warning");
+			return;
+		}
+
+		if (!user?.id) {
+			showToast("You must be logged in to comment!", "error");
+			return;
+		}
+
+		try {
+			const result = await RestClient.createComment(
+				postId,
+				user.id,
+				content
+			);
+			
+			if (result.data) {
+				setPostComments(prev => ({
+					...prev,
+					[postId]: [result.data, ...(prev[postId] || [])]
+				}));
+				
+				setPosts(posts.map(post => {
+					if (post.id === postId) {
+						return { ...post, commentsCount: post.commentsCount + 1 };
+					}
+					return post;
+				}));
+
+				setMainCommentContent(prev => ({ ...prev, [postId]: "" }));
+				showToast("Comment posted!", "success");
+			}
+		} catch (error) {
+			console.error("Failed to create comment:", error);
+			showToast("Failed to post comment", "error");
+		}
+	};
+
 	const CommentItem = ({ comment, postId, isReply = false, rootCommentId }: { comment: Comment; postId: number; isReply?: boolean; rootCommentId?: number }) => (
-		<div className={`flex gap-3 ${isReply ? 'ml-10 mt-3' : 'py-3'} animate-fadeIn`}>
+		<div className={`flex gap-3 ${isReply ? 'ml-10 mt-3' : 'py-3'}`}>
 			<div className={`${isReply ? 'w-8 h-8' : 'w-10 h-10'} bg-gradient-to-br from-[#556b2f] to-[#6d8c3a] rounded-full flex items-center justify-center flex-shrink-0 shadow-sm`}>
 				<span className="text-white font-semibold text-sm">
 					{(comment.user?.fullName || comment.user?.username || "?").charAt(0).toUpperCase()}
@@ -503,7 +600,7 @@ export default function NewsFeed() {
 				<div className="flex items-center gap-4 mt-2 ml-2">
 					<button
 						onClick={() => handleLikeComment(comment.id, postId)}
-						className={`flex items-center gap-1 text-xs font-medium ${
+						className={`flex items-center gap-1 text-xs font-medium cursor-pointer ${
 							likedComments.has(comment.id) ? 'text-red-500' : 'text-gray-500 hover:text-red-500'
 						} transition-all duration-300 hover:scale-110`}
 					>
@@ -519,7 +616,7 @@ export default function NewsFeed() {
 									rootCommentId: isReply ? rootCommentId : comment.id
 								});
 							}}
-							className="text-xs font-medium text-gray-500 hover:text-[#556b2f] transition-colors duration-300"
+							className="text-xs font-medium text-gray-500 hover:text-[#556b2f] transition-colors duration-300 cursor-pointer"
 						>
 							Reply
 						</button>
@@ -527,7 +624,7 @@ export default function NewsFeed() {
 					{user?.id === comment.user?.id && (
 						<button
 							onClick={() => handleDeleteComment(comment.id, postId, isReply, rootCommentId)}
-							className="text-xs text-gray-400 hover:text-red-500 transition-colors duration-300"
+							className="text-xs text-gray-400 hover:text-red-500 transition-colors duration-300 cursor-pointer"
 							title="Delete"
 						>
 							<IconTrash size={14} />
@@ -535,11 +632,48 @@ export default function NewsFeed() {
 					)}
 				</div>
 				
+				{/* Inline Reply Input - appears below the comment when replying */}
+				{isAuthenticated && replyingTo?.commentId === comment.id && (
+					<div className="flex gap-2 mt-3 ml-2">
+						<div className="w-8 h-8 bg-gradient-to-br from-[#556b2f] to-[#6d8c3a] rounded-full flex items-center justify-center flex-shrink-0 shadow-sm">
+							<span className="text-white font-semibold text-xs">
+								{(user?.username || "?").charAt(0).toUpperCase()}
+							</span>
+						</div>
+						<div className="flex-1 flex gap-2">
+							<input
+								type="text"
+								value={replyContent}
+								onChange={(e) => setReplyContent(e.target.value)}
+								placeholder={`Reply to ${comment.user?.username || 'comment'}...`}
+								className="flex-1 px-4 py-2 bg-gray-100 rounded-full text-sm focus:outline-none focus:ring-2 focus:ring-[#556b2f] focus:bg-white font-(family-name:--font-dmsans)"
+								autoFocus
+							/>
+							<button
+								onClick={() => handleSubmitComment(postId, isReply ? rootCommentId : comment.id)}
+								disabled={!replyContent.trim()}
+								className="p-2 bg-gradient-to-r from-[#556b2f] to-[#6d8c3a] text-white rounded-full hover:from-[#6d8c3a] hover:to-[#7a9947] disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 shadow-sm hover:shadow-md hover:scale-105 disabled:hover:scale-100 cursor-pointer"
+							>
+								<IconSend size={16} />
+							</button>
+							<button
+								onClick={() => {
+									setReplyingTo(null);
+									setReplyContent("");
+								}}
+								className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-full transition-all duration-300 cursor-pointer"
+							>
+								<IconX size={16} />
+							</button>
+						</div>
+					</div>
+				)}
+				
 				{/* Replies */}
 				{!isReply && comment.repliesCount > 0 && (
 					<button
 						onClick={() => toggleReplies(comment.id)}
-						className="flex items-center gap-1 text-xs text-[#556b2f] hover:text-[#6d8c3a] mt-2 ml-2 font-medium transition-colors duration-300"
+						className="flex items-center gap-1 text-xs text-[#556b2f] hover:text-[#6d8c3a] mt-2 ml-2 font-medium transition-colors duration-300 cursor-pointer"
 					>
 						{expandedReplies.has(comment.id) ? <IconChevronUp size={14} /> : <IconChevronDown size={14} />}
 						{comment.repliesCount} {comment.repliesCount === 1 ? 'reply' : 'replies'}
@@ -560,25 +694,29 @@ export default function NewsFeed() {
 	);
 
 	return (
-		<div className="min-h-screen bg-gradient-to-b from-gray-50 via-white to-gray-50">
-			{/* Decorative background elements */}
-			<div className="fixed inset-0 overflow-hidden pointer-events-none">
-				<div className="absolute -top-40 -right-40 w-80 h-80 bg-[#556b2f]/5 rounded-full blur-3xl"></div>
-				<div className="absolute top-1/2 -left-40 w-80 h-80 bg-[#747e59]/5 rounded-full blur-3xl"></div>
-				<div className="absolute -bottom-40 right-1/4 w-80 h-80 bg-[#556b2f]/5 rounded-full blur-3xl"></div>
-			</div>
-
-			<div className="relative max-w-2xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-				{/* Header with animated gradient */}
-				<div className="relative top-10 mb-16 text-center">
-					<h1 className="font-(family-name:--font-crimson) font-medium text-[4rem] sm:text-[5rem] text-gray-900 leading-tight">
-						News Feed
-						<span className="text-[#556b2f]">.</span>
-					</h1>
-					<p className="mt-2 text-gray-600 font-(family-name:--font-dmsans) text-lg animate-fadeIn">
-						Stay connected with your community
-					</p>
+		<div className={isEmbedded ? "" : "min-h-screen bg-gradient-to-b from-gray-50 via-white to-gray-50"}>
+			{/* Decorative background elements - only show when not embedded */}
+			{!isEmbedded && (
+				<div className="fixed inset-0 overflow-hidden pointer-events-none">
+					<div className="absolute -top-40 -right-40 w-80 h-80 bg-[#556b2f]/5 rounded-full blur-3xl"></div>
+					<div className="absolute top-1/2 -left-40 w-80 h-80 bg-[#747e59]/5 rounded-full blur-3xl"></div>
+					<div className="absolute -bottom-40 right-1/4 w-80 h-80 bg-[#556b2f]/5 rounded-full blur-3xl"></div>
 				</div>
+			)}
+
+			<div className={isEmbedded ? "" : "relative max-w-2xl mx-auto px-4 sm:px-6 lg:px-8 py-8"}>
+				{/* Header with animated gradient - only show when not embedded */}
+				{!isEmbedded && (
+					<div className="relative top-10 mb-16 text-center">
+						<h1 className="font-(family-name:--font-crimson) font-medium text-[4rem] sm:text-[5rem] text-gray-900 leading-tight">
+							News Feed
+							<span className="text-[#556b2f]">.</span>
+						</h1>
+						<p className="mt-2 text-gray-600 font-(family-name:--font-dmsans) text-lg animate-fadeIn">
+							Stay connected with your community
+						</p>
+					</div>
+				)}
 
 				{/* Create Post Card (only for logged-in users) */}
 				{isAuthenticated && (
@@ -609,7 +747,7 @@ export default function NewsFeed() {
 											/>
 											<button
 												onClick={clearImage}
-												className="absolute -top-2 -right-2 bg-gray-800/90 text-white rounded-full p-1.5 hover:bg-gray-700 transition-colors duration-300 shadow-lg"
+												className="absolute -top-2 -right-2 bg-gray-800/90 text-white rounded-full p-1.5 hover:bg-gray-700 transition-colors duration-300 shadow-lg cursor-pointer"
 											>
 												<IconX size={14} />
 											</button>
@@ -633,7 +771,7 @@ export default function NewsFeed() {
 										<button
 											onClick={handleSubmitPost}
 											disabled={isSubmitting || !newPostContent.trim()}
-											className="flex items-center gap-2 bg-gradient-to-r from-[#556b2f] to-[#6d8c3a] text-white px-6 py-2.5 rounded-full hover:from-[#6d8c3a] hover:to-[#7a9947] disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 font-semibold font-(family-name:--font-dmsans) shadow-lg hover:shadow-xl hover:scale-105 disabled:hover:scale-100"
+											className="flex items-center gap-2 bg-gradient-to-r from-[#556b2f] to-[#6d8c3a] text-white px-6 py-2.5 rounded-full hover:from-[#6d8c3a] hover:to-[#7a9947] disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 font-semibold font-(family-name:--font-dmsans) shadow-lg hover:shadow-xl hover:scale-105 disabled:hover:scale-100 cursor-pointer"
 										>
 											<IconSend size={18} className={isSubmitting ? "animate-pulse" : ""} />
 											{isSubmitting ? "Posting..." : "Share"}
@@ -645,25 +783,17 @@ export default function NewsFeed() {
 					</Card>
 				)}
 
-				{/* Loading State */}
-				{loading && (
-					<div className="flex flex-col items-center justify-center py-16">
-						<div className="relative">
-							<div className="w-16 h-16 border-4 border-[#556b2f]/20 rounded-full"></div>
-							<div className="absolute top-0 left-0 w-16 h-16 border-4 border-[#556b2f] border-t-transparent rounded-full animate-spin"></div>
-						</div>
-						<p className="mt-4 text-gray-600 font-(family-name:--font-crimson) animate-pulse">Loading posts...</p>
-					</div>
-				)}
+				{/* Loading State Removed */}
 
 				{/* Posts Feed */}
-				{!loading && (
-					<div className="flex flex-col gap-6">
-						{posts.map((post, index) => (
+
+
+				<div className="flex flex-col gap-6">
+					{posts.map((post, index) => (
+						<div key={post.id} ref={index === posts.length - 1 ? lastPostElementRef : null}>
 							<Card 
-								key={post.id} 
 								className="overflow-hidden shadow-lg border-0 bg-white/80 backdrop-blur-sm hover:shadow-2xl transition-all duration-500 group animate-fadeIn"
-								style={{ animationDelay: `${index * 100}ms` }}
+								style={{ animationDelay: `${(index % 5) * 100}ms` }}
 							>
 								{/* Hover gradient effect */}
 								<div className="absolute inset-0 bg-gradient-to-br from-[#556b2f]/5 via-transparent to-[#6d8c3a]/5 opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
@@ -700,7 +830,7 @@ export default function NewsFeed() {
 										{user?.id === post.user?.id && (
 											<button
 												onClick={() => handleDeletePost(post.id)}
-												className="text-gray-400 hover:text-red-500 p-2 rounded-full hover:bg-red-50 transition-all duration-300"
+												className="text-gray-400 hover:text-red-500 p-2 rounded-full hover:bg-red-50 transition-all duration-300 cursor-pointer"
 												title="Delete post"
 											>
 												<IconTrash size={18} />
@@ -732,6 +862,7 @@ export default function NewsFeed() {
 											<span className="flex items-center gap-1.5 font-(family-name:--font-dmsans)">
 												<span className="w-5 h-5 bg-gradient-to-br from-red-400 to-red-500 rounded-full flex items-center justify-center shadow-sm">
 													<IconHeartFilled size={12} className="text-white" />
+													<IconHeartFilled size={18} className="text-white" />
 												</span>
 												{post.likesCount}
 											</span>
@@ -745,26 +876,26 @@ export default function NewsFeed() {
 									<div className="flex items-center gap-2 pt-3">
 										<button
 											onClick={() => handleLikePost(post.id)}
-											className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl font-semibold font-(family-name:--font-dmsans) transition-all duration-300 ${
+											className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl font-semibold font-(family-name:--font-dmsans) transition-all duration-300 cursor-pointer ${
 												likedPosts.has(post.id)
 													? "text-red-500 bg-red-50 hover:bg-red-100"
 													: "text-gray-600 hover:bg-gray-100"
 											} ${animatingLike === post.id ? 'animate-heartBeat' : ''}`}
 										>
-											{likedPosts.has(post.id) ? (
-												<IconHeartFilled size={20} className={animatingLike === post.id ? 'animate-ping-once' : ''} />
-											) : (
-												<IconHeart size={20} />
-											)}
-											<span>Like</span>
+											{likedPosts.has(post.id) ? <IconHeartFilled size={18} /> : <IconHeart size={18} />}
+											<span>{likedPosts.has(post.id) ? "Liked" : "Like"}</span>
 										</button>
 
 										<button
 											onClick={() => toggleComments(post.id)}
-											className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-gray-600 hover:bg-gray-100 font-semibold font-(family-name:--font-dmsans) transition-all duration-300"
+											className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl font-semibold font-(family-name:--font-dmsans) transition-all duration-300 cursor-pointer ${
+												expandedComments.has(post.id)
+													? "text-[#556b2f] bg-[#556b2f]/10"
+													: "text-gray-600 hover:bg-gray-100"
+											}`}
 										>
-											<IconMessageCircle size={20} />
-											<span>Comment</span>
+											<IconMessageCircle size={18} />
+											Comment
 										</button>
 									</div>
 
@@ -773,57 +904,32 @@ export default function NewsFeed() {
 										<div className="mt-4 pt-4 border-t border-gray-100 animate-slideDown">
 											{/* Comment Input */}
 											{isAuthenticated && (
-												<div className="flex gap-3 mb-4">
-													<div className="w-10 h-10 bg-gradient-to-br from-[#556b2f] to-[#6d8c3a] rounded-full flex items-center justify-center flex-shrink-0 shadow-sm">
-														<span className="text-white font-semibold text-sm">
+												<div className="flex gap-2">
+													<div className="w-8 h-8 bg-gradient-to-br from-[#556b2f] to-[#6d8c3a] rounded-full flex items-center justify-center flex-shrink-0 shadow-sm">
+														<span className="text-white font-semibold text-xs">
 															{(user?.username || "?").charAt(0).toUpperCase()}
 														</span>
 													</div>
 													<div className="flex-1 flex gap-2">
 														<input
 															type="text"
-															value={replyingTo?.postId === post.id && !replyingTo?.commentId ? replyContent : (replyingTo?.postId === post.id ? replyContent : "")}
-															onChange={(e) => {
-																if (!replyingTo || replyingTo.postId !== post.id) {
-																	setReplyingTo({ postId: post.id });
-																}
-																setReplyContent(e.target.value);
-															}}
-															onFocus={() => {
-																if (!replyingTo || replyingTo.postId !== post.id) {
-																	setReplyingTo({ postId: post.id });
-																}
-															}}
+															value={mainCommentContent[post.id] || ""}
+															onChange={(e) => setMainCommentContent(prev => ({ ...prev, [post.id]: e.target.value }))}
 															placeholder="Write a comment..."
-															className="flex-1 px-4 py-2.5 bg-gray-100 rounded-full text-sm focus:outline-none focus:ring-2 focus:ring-[#556b2f] focus:bg-white font-(family-name:--font-dmsans) transition-all duration-300"
+															className="flex-1 px-4 py-2 bg-gray-100 rounded-full text-sm focus:outline-none focus:ring-2 focus:ring-[#556b2f] focus:bg-white font-(family-name:--font-dmsans)"
 														/>
 														<button
-															onClick={() => handleSubmitComment(post.id)}
-															disabled={!replyContent.trim()}
-															className="p-2.5 bg-gradient-to-r from-[#556b2f] to-[#6d8c3a] text-white rounded-full hover:from-[#6d8c3a] hover:to-[#7a9947] disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 shadow-md hover:shadow-lg hover:scale-105 disabled:hover:scale-100"
+															onClick={() => handleSubmitMainComment(post.id)}
+															disabled={!mainCommentContent[post.id]?.trim()}
+															className="p-2 bg-gradient-to-r from-[#556b2f] to-[#6d8c3a] text-white rounded-full hover:from-[#6d8c3a] hover:to-[#7a9947] disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 shadow-sm hover:shadow-md hover:scale-105 disabled:hover:scale-100"
 														>
-															<IconSend size={18} />
+															<IconSend size={16} />
 														</button>
 													</div>
 												</div>
 											)}
 
-											{/* Reply indicator */}
-											{replyingTo?.postId === post.id && replyingTo?.commentId && (
-												<div className="flex items-center gap-2 mb-3 ml-12 text-sm text-[#556b2f] bg-[#556b2f]/10 px-3 py-2 rounded-full w-fit animate-fadeIn">
-													<IconSparkles size={14} />
-													<span className="font-(family-name:--font-dmsans)">Replying to a comment</span>
-													<button
-														onClick={() => {
-															setReplyingTo({ postId: post.id });
-															setReplyContent("");
-														}}
-														className="text-gray-500 hover:text-gray-700 transition-colors duration-300"
-													>
-														<IconX size={14} />
-													</button>
-												</div>
-											)}
+
 
 											{/* Comments List */}
 											<div className="divide-y divide-gray-50">
@@ -850,7 +956,15 @@ export default function NewsFeed() {
 									)}
 								</CardContent>
 							</Card>
-						))}
+						</div>
+					))}
+
+					{/* Loading indicator for infinite scroll */}
+					{loading && (
+						<div className="flex justify-center py-4">
+							<div className="w-8 h-8 border-2 border-[#556b2f] border-t-transparent rounded-full animate-spin"></div>
+						</div>
+					)}
 
 						{posts.length === 0 && !loading && (
 							<div className="text-center py-20 animate-fadeIn">
@@ -866,7 +980,6 @@ export default function NewsFeed() {
 							</div>
 						)}
 					</div>
-				)}
 			</div>
 
 			{/* Custom CSS animations */}
@@ -903,6 +1016,7 @@ export default function NewsFeed() {
 					animation: ping-once 0.4s ease-out;
 				}
 			`}</style>
+			<ConfirmDialogComponent />
 		</div>
 	);
 }

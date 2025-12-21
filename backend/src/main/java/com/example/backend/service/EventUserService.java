@@ -30,6 +30,11 @@ public class EventUserService {
             return null; // User has already registered for this event
         }
 
+        notificationService.createAndSendNotification(event.getManager().getId(),
+                "User " + "<b>" + user.getUsername() + "</b>" + " vừa đăng ký tham gia sự kiện "
+                        + "<b>" + event.getTitle() + "</b>",
+                "/events/" + eventId);
+
         eventUser.setUser(user);
         eventUser.setEvent(event);
         eventUser.setStatus(false);
@@ -76,8 +81,6 @@ public class EventUserService {
         if (event.getStartTime().isBefore(java.time.LocalDateTime.now())) {
             return null;
         }
-
-        System.out.println(user.getUsername() + " " + event.getTitle());
 
         EventUser eventUser = eventUserRepository.findByUserAndEvent(user, event).orElse(null);
         if (eventUser != null) {
@@ -151,5 +154,16 @@ public class EventUserService {
         return eventUserRepository.findByUserAndEvent(user, event)
                 .map(EventUserResponse::fromEventUser)
                 .orElse(null);
+    }
+
+    // Mark participant attendance (completed or absent)
+    public EventUserResponse markCompleted(Long eventUserId, boolean completed) {
+        EventUser eventUser = eventUserRepository.findById(eventUserId).orElse(null);
+        if (eventUser != null) {
+            eventUser.setCompleted(completed);
+            eventUserRepository.save(eventUser);
+            return EventUserResponse.fromEventUser(eventUser);
+        }
+        return null;
     }
 }

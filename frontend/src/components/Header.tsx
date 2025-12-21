@@ -3,7 +3,6 @@ import {
 	IconBell,
 	IconMenu2,
 	IconX,
-	IconUser,
 	IconCalendarEvent,
 	IconLogout,
 	IconChevronDown,
@@ -36,7 +35,6 @@ export default function Header() {
 	const rawRole = auth.user?.role;
 	const roleName = typeof rawRole === "string" ? rawRole : (rawRole as { name?: string; role?: string } | undefined)?.name ?? "";
 	const greetingLabel = roleName === "USER" ? "user" : roleName === "HOST" ? "host" : roleName === "ADMIN" ? "admin" : "user";
-	// role may be a string or an object like { id, name }
 
 	useEffect(() => {
 		const handleScroll = () => {
@@ -148,9 +146,20 @@ export default function Header() {
 
 	const handleMarkAsRead = async (notificationId: number) => {
 		try {
-			const result = await RestClient.markNotificationAsRead(notificationId);
+			await RestClient.markNotificationAsRead(notificationId);
 			fetchNotifications();
 		} catch (err) {
+		}
+	};
+
+	const handleMarkAllAsRead = async () => {
+		if (!auth.user?.id) return;
+		
+		try {
+			await RestClient.markAllNotificationsAsRead(auth.user.id);
+			fetchNotifications();
+		} catch (err) {
+			console.error("Failed to mark all notifications as read:", err);
 		}
 	};
 
@@ -178,6 +187,7 @@ export default function Header() {
 		{ name: "Home", path: "/" },
 		{ name: "Events", path: "/events" },
 		{ name: "News Feed", path: "/newsfeed" },
+		{ name: "Dashboard", path: "/dashboard" },
 	];
 
 	// Get current path to highlight active link
@@ -238,10 +248,18 @@ export default function Header() {
 							{/* Notification Dropdown */}
 							{isNotificationOpen && (
 								<div className="absolute right-0 mt-2 w-80 bg-white rounded-xl shadow-xl border border-gray-200 z-[1001] max-h-96 overflow-y-auto">
-									<div className="px-4 py-3 border-b border-gray-200 bg-gradient-to-r from-[#556b2f]/5 to-[#747e59]/5">
+									<div className="px-4 py-3 border-b border-gray-200 bg-gradient-to-r from-[#556b2f]/5 to-[#747e59]/5 flex items-center justify-between">
 										<h3 className="font-bold text-[#556b2f] text-base font-(family-name:--font-dmsans)">
 											Notifications
 										</h3>
+										{unreadCount > 0 && (
+											<button
+												onClick={handleMarkAllAsRead}
+												className="text-xs text-[#556b2f] hover:text-[#6d8c3a] font-semibold font-(family-name:--font-dmsans) hover:underline transition-colors cursor-pointer"
+											>
+												Mark all as read
+											</button>
+										)}
 									</div>
 									<div className="divide-y divide-gray-100">
 										{notifications.filter(notif => !notif.read).length === 0 ? (
@@ -315,7 +333,7 @@ export default function Header() {
 											setIsUserMenuOpen(false);
 											navigate("/my-events");
 										}}
-										className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors text-left text-gray-700"
+										className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors text-left text-gray-700 cursor-pointer"
 									>
 										<IconCalendarEvent
 											size={20}
@@ -326,21 +344,7 @@ export default function Header() {
 										</span>
 									</button>
 
-									<button
-										onClick={() => {
-											setIsUserMenuOpen(false);
-											// Navigate to profile
-										}}
-										className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors text-left text-gray-700"
-									>
-										<IconUser
-											size={20}
-											className="text-[#556b2f]"
-										/>
-										<span className="font-medium">
-											Profile
-										</span>
-									</button>
+
 
 									<div className="border-t border-gray-200 my-2"></div>
 
@@ -349,7 +353,7 @@ export default function Header() {
 											auth.logout();
 											setIsUserMenuOpen(false);
 										}}
-										className="w-full flex items-center gap-3 px-4 py-3 hover:bg-red-50 transition-colors text-left text-red-600"
+										className="w-full flex items-center gap-3 px-4 py-3 hover:bg-red-50 transition-colors text-left text-red-600 cursor-pointer"
 									>
 										<IconLogout size={20} />
 										<span className="font-medium">
@@ -394,7 +398,7 @@ export default function Header() {
 			>
 				{/* Backdrop */}
 				<div
-					className={`absolute inset-0 bg-black/50 backdrop-blur-sm transition-opacity duration-300 ${isMobileMenuOpen ? "opacity-100" : "opacity-0"}`}
+					className={`absolute inset-0 bg-black/50 backdrop-blur-sm transition-opacity duration-300 cursor-pointer ${isMobileMenuOpen ? "opacity-100" : "opacity-0"}`}
 					onClick={() => setIsMobileMenuOpen(false)}
 				/>
 

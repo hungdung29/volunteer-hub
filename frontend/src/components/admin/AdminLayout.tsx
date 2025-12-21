@@ -1,11 +1,17 @@
-import { useState } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
-import { IconLayoutDashboard, IconCalendarEvent, IconUsers, IconLogout, IconMenu2 } from "@tabler/icons-react";
+import { IconLayoutDashboard, IconCalendarEvent, IconUsers, IconLogout, IconMenu2, IconBell, IconNewSection } from "@tabler/icons-react";
 import logo from "../../assets/VolunteerHub.png";
 import { useAuth } from "../../contexts/AuthContext";
+import { RestClient } from "../../api/RestClient";
+import { onPushMessage } from "../../utils/pushNotifications";
 
 export default function AdminLayout() {
 	const [isSidebarOpen, setSidebarOpen] = useState(true);
+	const [isNotificationOpen, setIsNotificationOpen] = useState(false);
+	const [notifications, setNotifications] = useState<any[]>([]);
+	const [unreadCount, setUnreadCount] = useState(0);
+	const notificationRef = useRef<HTMLDivElement>(null);
 	const auth = useAuth();
 	const navigate = useNavigate();
 
@@ -16,10 +22,100 @@ export default function AdminLayout() {
 		navigate("/");
 	};
 
+	// Fetch notifications
+	const fetchNotifications = useCallback(async () => {
+		if (!auth.user?.id) return;
+
+		try {
+			const notifResult = await RestClient.getUserNotifications(auth.user.id);
+
+			if (notifResult.data) {
+				setNotifications(notifResult.data);
+				const unreadNotifications = notifResult.data.filter((n: any) => !n.read);
+				setUnreadCount(unreadNotifications.length);
+			}
+		} catch (err) {
+			console.error("Failed to fetch notifications:", err);
+		}
+	}, [auth.user?.id]);
+
+	useEffect(() => {
+		console.log('🔍 Admin auth state:', { 
+			isAuthenticated: auth.isAuthenticated, 
+			userId: auth.user?.id,
+			username: auth.user?.username,
+			token: localStorage.getItem('token') ? 'EXISTS' : 'MISSING'
+		});
+		
+		if (auth.isAuthenticated && auth.user?.id) {
+			fetchNotifications();
+			const interval = setInterval(fetchNotifications, 30000);
+			return () => clearInterval(interval);
+		} else {
+			console.warn('⚠️ Admin: Not fetching notifications - auth not ready', { 
+				isAuthenticated: auth.isAuthenticated, 
+				userId: auth.user?.id 
+			});
+		}
+	}, [auth.isAuthenticated, auth.user?.id, fetchNotifications]);
+
+	// Listen for push notifications from service worker
+	useEffect(() => {
+		if (!auth.isAuthenticated) return;
+
+		const cleanup = onPushMessage((data) => {
+			console.log('🔔 Push notification received in Admin:', data);
+			fetchNotifications();
+		});
+
+		return cleanup;
+	}, [auth.isAuthenticated, fetchNotifications]);
+
+	const handleMarkAsRead = async (notificationId: number) => {
+		try {
+			await RestClient.markNotificationAsRead(notificationId);
+			fetchNotifications();
+		} catch (err) {
+			console.error("Failed to mark notification as read:", err);
+		}
+	};
+
+	const handleMarkAllAsRead = async () => {
+		if (!auth.user?.id) return;
+		
+		try {
+			await RestClient.markAllNotificationsAsRead(auth.user.id);
+			fetchNotifications();
+		} catch (err) {
+			console.error("Failed to mark all notifications as read:", err);
+		}
+	};
+
+	// Close notification menu when clicking outside
+	useEffect(() => {
+		const handleClickOutside = (event: MouseEvent) => {
+			if (
+				notificationRef.current &&
+				!notificationRef.current.contains(event.target as Node)
+			) {
+				setIsNotificationOpen(false);
+			}
+		};
+
+		if (isNotificationOpen) {
+			document.addEventListener("mousedown", handleClickOutside);
+		}
+
+		return () => {
+			document.removeEventListener("mousedown", handleClickOutside);
+		};
+	}, [isNotificationOpen]);
+
 	const navItems = [
-		{ name: "Dashboard", path: "/admin", icon: <IconLayoutDashboard size={20} /> },
 		{ name: "Event Approvals", path: "/admin/events", icon: <IconCalendarEvent size={20} /> },
 		{ name: "User Management", path: "/admin/users", icon: <IconUsers size={20} /> },
+		{ name: "Dashboard", path: "/admin/dashboard", icon: <IconLayoutDashboard size={20} /> },
+		{ name: "News Feed", path: "/admin/newsfeed", icon: <IconNewSection size={20} /> },
 	];
 
 	return (
@@ -44,7 +140,6 @@ export default function AdminLayout() {
 							<NavLink
 								key={item.path}
 								to={item.path}
-								end={item.path === "/admin"}
 								className={({ isActive }) =>
 									`flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 group ${
 										isActive
@@ -72,7 +167,7 @@ export default function AdminLayout() {
 					<div className="p-4 border-t border-gray-100">
 						<button
 							onClick={handleLogout}
-							className="flex items-center gap-3 w-full px-4 py-3 text-red-500 hover:bg-red-50 rounded-xl transition-colors"
+							className="flex items-center gap-3 w-full px-4 py-3 text-red-500 hover:bg-red-50 rounded-xl transition-colors cursor-pointer"
 						>
 							<IconLogout size={20} />
 							<span className={`whitespace-nowrap transition-opacity duration-300 ${isSidebarOpen ? "opacity-100" : "opacity-0 lg:hidden"}`}>
@@ -95,12 +190,80 @@ export default function AdminLayout() {
 					</button>
 
 					<div className="flex items-center gap-4 ml-auto">
+						{/* Notification Bell */}
+						<div className="relative" ref={notificationRef}>
+							<button
+								onClick={() => setIsNotificationOpen(!isNotificationOpen)}
+								className="p-2 text-gray-600 hover:text-[#556b2f] hover:bg-[#556b2f]/10 rounded-lg transition-all duration-300 cursor-pointer relative"
+							>
+								<IconBell size={24} stroke={1.5} />
+								{unreadCount > 0 && (
+									<span className="absolute top-0 right-0 min-w-[18px] h-[18px] bg-[#747e59] rounded-full border-2 border-white text-white text-[10px] font-bold flex items-center justify-center px-1 shadow-sm font-(family-name:--font-dmsans)">
+										{unreadCount > 9 ? "9+" : unreadCount}
+									</span>
+								)}
+							</button>
+
+							{/* Notification Dropdown */}
+							{isNotificationOpen && (
+								<div className="absolute right-0 mt-2 w-80 bg-white rounded-xl shadow-xl border border-gray-200 z-[1001] max-h-96 overflow-y-auto">
+									<div className="px-4 py-3 border-b border-gray-200 bg-gradient-to-r from-[#556b2f]/5 to-[#747e59]/5 flex items-center justify-between">
+										<h3 className="font-bold text-[#556b2f] text-base font-(family-name:--font-dmsans)">
+											Notifications
+										</h3>
+										{unreadCount > 0 && (
+											<button
+												onClick={handleMarkAllAsRead}
+												className="text-xs text-[#556b2f] hover:text-[#6d8c3a] font-semibold font-(family-name:--font-dmsans) hover:underline transition-colors cursor-pointer"
+											>
+												Mark all as read
+											</button>
+										)}
+									</div>
+									<div className="divide-y divide-gray-100">
+										{notifications.filter(notif => !notif.read).length === 0 ? (
+											<div className="px-4 py-8 text-center text-gray-500 text-sm font-(family-name:--font-dmsans)">
+												No new notifications...
+											</div>
+										) : (
+											notifications
+												.filter(notif => !notif.read)
+												.slice(0, 10)
+												.map((notif) => (
+													<div
+														key={notif.id}
+														className={`px-4 py-3 hover:bg-[#556b2f]/5 cursor-pointer transition-colors duration-200 ${
+															!notif.read
+																? "bg-[#747e59]/10 border-l-4 border-[#747e59]"
+																: ""
+														}`}
+														onClick={async () => {
+															await handleMarkAsRead(notif.id);
+															if (notif.link)
+																navigate(notif.link);
+														}}
+													>
+														<p 
+															className="text-sm text-gray-800 font-(family-name:--font-dmsans)"
+															dangerouslySetInnerHTML={{ __html: notif.content }}
+														/>
+														<p className="text-xs text-[#556b2f]/70 mt-1 font-(family-name:--font-dmsans)">
+															{new Date(notif.createdAt).toLocaleString()}
+														</p>
+													</div>
+												))
+										)}
+									</div>
+								</div>
+							)}
+						</div>
+
 						<div className="text-right hidden sm:block">
-							<p className="text-sm font-medium text-gray-900">Admin User</p>
+							<p className="text-sm font-medium text-gray-900">{auth.user?.username || "Admin User"}</p>
 							<p className="text-xs text-gray-500">Administrator</p>
 						</div>
 						<div className="h-10 w-10 rounded-full bg-[#556b2f] text-white flex items-center justify-center font-bold text-lg">
-							A
+							{(auth.user?.username || "A").charAt(0).toUpperCase()}
 						</div>
 					</div>
 				</header>
@@ -114,7 +277,7 @@ export default function AdminLayout() {
 			{/* Mobile Overlay */}
 			{isSidebarOpen && (
 				<div 
-					className="fixed inset-0 bg-black/50 z-40 lg:hidden"
+					className="fixed inset-0 bg-black/50 z-40 lg:hidden cursor-pointer"
 					onClick={() => setSidebarOpen(false)}
 				/>
 			)}
