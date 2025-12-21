@@ -1,0 +1,38 @@
+name: Sync Fork
+
+on:
+  schedule:
+    - cron: '*/30 * * * *' # Chạy mỗi 30 phút
+  workflow_dispatch: # Cho phép chạy thủ công
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0 # Lấy toàn bộ lịch sử để merge
+
+      - name: Configure Git
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+      - name: Sync with Upstream
+        run: |
+          # Thêm remote upstream (Repo gốc)
+          git remote add upstream https://github.com/simonnguyen175/volunteer-hub.git
+          
+          # Lấy code mới nhất về
+          git fetch upstream
+
+          # Chuyển sang nhánh frontend (nhánh chính của bạn)
+          git checkout frontend
+
+          # Merge code từ upstream/frontend vào
+          git merge upstream/frontend --allow-unrelated-histories -m "Auto-sync from upstream"
+
+          # Đẩy code đã merge lên lại Fork của bạn
+          git push origin frontend
