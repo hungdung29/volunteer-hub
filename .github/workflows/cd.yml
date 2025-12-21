@@ -2,7 +2,7 @@ name: CD - Deploy Backend
 
 on:
   push:
-    branches: [ "frontend" ] # Deploy backend when pushing to frontend branch
+    branches: [ "master" ] # Deploy backend when pushing to master branch
     paths:
       - 'backend/**'
 
