@@ -11,12 +11,17 @@ permissions:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        branch: [frontend, master]      # Định nghĩa danh sách các nhánh cần sync
+      fail-fast: false                  # Nếu một nhánh lỗi, nhánh kia vẫn chạy tiếp
     steps:
-      - name: Checkout Code
+      - name: Checkout Target Branch
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 0 # Lấy toàn bộ lịch sử để merge
+          ref: ${{ matrix.branch }}     # Checkout Code của nhánh trong matrix (frontend hoặc master)
+          fetch-depth: 0
 
       - name: Configure Git
         run: |
@@ -25,17 +30,14 @@ jobs:
 
       - name: Sync with Upstream
         run: |
-          # Thêm remote upstream (Repo gốc)
           git remote add upstream https://github.com/simonnguyen175/volunteer-hub.git
-          
-          # Lấy code mới nhất về
           git fetch upstream
 
-          # Chuyển sang nhánh frontend (nhánh chính của bạn)
-          git checkout frontend
+          # Đảm bảo đang ở đúng nhánh cần sync
+          git checkout ${{ matrix.branch }}
 
-          # Merge code từ upstream/frontend vào
-          git merge upstream/frontend --allow-unrelated-histories -m "Auto-sync from upstream"
+          # Merge code từ nhánh tương ứng của upstream
+          git merge upstream/${{ matrix.branch }} --allow-unrelated-histories -m "Auto-sync from upstream"
 
-          # Đẩy code đã merge lên lại Fork của bạn
-          git push origin frontend
+          # Đẩy code lên Fork
+          git push origin ${{ matrix.branch }}
