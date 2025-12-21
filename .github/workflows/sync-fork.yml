@@ -5,6 +5,9 @@ on:
     - cron: '*/30 * * * *' # Chạy mỗi 30 phút
   workflow_dispatch: # Cho phép chạy thủ công
 
+permissions:
+  contents: write
+
 jobs:
   sync:
     runs-on: ubuntu-latest
